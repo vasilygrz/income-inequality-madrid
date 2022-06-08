@@ -1,2 +1,1 @@
-# income inequality madrid
- Desigualdad espacial de la renta en Madrid
+# Desigualdad espacial de la renta en Madrid
