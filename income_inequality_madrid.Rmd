@@ -1,0 +1,857 @@
+---
+title: "Desigualdad espacial de la renta en Madrid"
+author: "Vasily Griaznov"
+output:
+  bookdown::html_document2:
+    toc: true
+    df_print: paged
+bibliography: references.bib
+csl: https://raw.githubusercontent.com/citation-style-language/styles/master/apa.csl
+link-citations: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      dev = "svglite")
+```
+
+```{=html}
+<html>
+  <head>
+    <style>
+      body {
+        text-align: justify}
+    </style>
+  </head>
+</html>
+```
+# Configuración del sistema
+
+Determinamos la configuración del sistema que estamos usando:
+
+```{r eval=FALSE}
+sessionInfo()
+```
+
+En mi caso obtengo:
+
+    R version 4.2.0 (2022-04-22 ucrt)
+    Platform: x86_64-w64-mingw32/x64 (64-bit)
+    Running under: Windows 10 x64 (build 19044)
+
+    locale:
+    [1] LC_COLLATE=English_United Kingdom.1252  LC_CTYPE=English_United Kingdom.1252   
+    [3] LC_MONETARY=English_United Kingdom.1252 LC_NUMERIC=C                           
+    [5] LC_TIME=English_United Kingdom.1252
+
+Estos parámetros se pueden cambiar con el comando `Sys.setlocale()`. `LC_NUMERIC=C` emplea el punto (`.`) como separador decimal, esto habrá que tenerlo en cuenta cuando carguemos datos que usen la coma (`,`).
+
+# Cargar librerías
+
+Cargamos las librerías que vamos a utilizar.
+
+```{r message=FALSE}
+
+# Data processing
+library(tidyverse) # packages for data science
+library(units) # measurement units
+library(skimr) # summary statistics
+
+# Microsoft Excel
+library(tidyxl) # read untidy excel files
+library(unpivotr) # process non-tabular data
+
+# Visualisation
+library(sf) # vector data
+library(tmap) # static and interactive maps
+library(scales) # scales for ggplot2
+library(ggcorrplot) # correlation matrix
+library(ggrepel) # repulsive labels for ggplot2
+
+# Analysis
+library(spdep) # spatial analysis
+library(lctools) # spatial gini coefficient
+```
+
+# Datos
+
+Se usarán las siguientes seis variables para el período 2015-2019:
+
+1.  *Cartografía de las secciones censales de España*. Fuente: [Instituto Nacional de Estadística](https://www.ine.es/ss/Satellite?L=es_ES&c=Page&cid=1259952026632&p=1259952026632&pagename=ProductosYServicios%2FPYSLayout).
+2.  *Cartografía de los distritos de Madrid*. Fuente: [Geoportal, Ayuntamiento de Madrid](https://geoportal.madrid.es/IDEAM_WBGEOPORTAL/dataset.iam?id=541f4ef6-762b-11e9-861d-ecb1d753f6e8).
+3.  *Renta neta media anual de los hogares*. Fuentes: [Atlas de Distribución de Renta de los Hogares, Instituto Nacional de Estadística](https://www.ine.es/experimental/atlas/experimental_atlas.htm); Agencia Estatal de Administración Tributaria.
+4.  *Tamaño medio del hogar*. Fuentes: Atlas de Distribución de Renta de los Hogares, Instituto Nacional de Estadística.
+5.  *Tasa absoluta de paro registrado*. Fuentes: Servicio Público de Empleo Estatal, Ministerio de Trabajo y Economía Social; Subdirección General de Estadística, Ayuntamiento de Madrid [[1](http://www-2.munimadrid.es/CSE6/control/seleccionDatos?numSerie=9040100012), [2](http://www-2.munimadrid.es/CSE6/control/seleccionDatos?numSerie=9040100013), [3](http://www-2.munimadrid.es/CSE6/control/seleccionDatos?numSerie=9040100014)].
+6.  *Nivel de estudios de la población ≥25 años*. Fuente: Subdirección General de Estadística, Ayuntamiento de Madrid [[1](http://www-2.munimadrid.es/CSE6/control/seleccionDatos?numSerie=3010107011), [2](http://www-2.munimadrid.es/CSE6/control/seleccionDatos?numSerie=3010107012)].
+
+## Cartografía
+
+Descargamos los datos (ESRI Shapefiles), los descomprimimos en carpetas y los cargamos.
+
+```{r}
+
+#download.file(url = "https://www.ine.es/prodyser/cartografia/seccionado_2022.zip", "data/secciones censales 2022.zip")
+#unzip(zipfile = "data/secciones censales 2022.zip", exdir = "data/secciones censales 2022")
+
+#download.file(url = "https://geoportal.madrid.es/fsdescargas/IDEAM_WBGEOPORTAL/LIMITES_ADMINISTRATIVOS/Distritos/Distritos.zip", destfile = "data/distritos.zip")
+#unzip(zipfile = "data/distritos.zip", exdir = "data/distritos")
+
+secciones_censales <- st_read("data/secciones censales 2022/Espa¤a_Seccionado2022_ETRS89H30/SECC_CE_20220101.shp", quiet = TRUE)
+
+distritos <- st_read("data/distritos/Distritos_20210712.shp", quiet = TRUE) %>% 
+  arrange(COD_DIS_TX)
+```
+
+```{r fig.align='center'}
+
+secciones_censales %>%
+  filter(CUMUN == "28079") %>% 
+  ggplot() +
+  geom_sf(size = 0.1) +
+  labs(x = "Longitud", y = "Latitud") + 
+  theme_light() +
+  theme(
+    text = element_text(
+      family = "serif"),
+    axis.title = element_text(
+      size = 12),
+    axis.text = element_text(
+      size = 8)) +
+  coord_sf(clip = "off")
+```
+
+Agregamos las secciones censales en distritos.
+
+```{r message=FALSE}
+
+secciones_madrid <- filter(secciones_censales, CUMUN == "28079") %>% 
+  group_by(NCA, NMUN, CDIS) %>% 
+  rename("CCAA" = NCA, "MUN" = NMUN) %>% 
+  summarise(.groups = "drop")
+
+# CCAA: Comunidad Autónoma
+# MUN:  Municipio
+# CDIS: Código de distrito
+```
+
+```{r out.width='100%'}
+
+tmap_mode("view")
+
+tm_shape(secciones_madrid) +
+    tm_polygons()
+```
+
+Eliminamos los elementos 2 y 3 del distrito 03 (Retiro).
+
+```{r fig.align='center'}
+
+secciones_madrid$geometry[[3]][3] <- NULL
+secciones_madrid$geometry[[3]][2] <- NULL
+
+ggplot(secciones_madrid) +
+  geom_sf(size = 0.1) +
+  labs(x = "Longitud", y = "Latitud") + 
+  theme_light() +
+  theme(
+    text = element_text(
+      family = "serif"),
+    axis.title = element_text(
+      size = 12),
+    axis.text = element_text(
+      size = 8)) +
+  coord_sf(clip = "off")
+```
+
+Comparamos la superficie de `secciones_madrid` --agregación de secciones censales de los distritos de Madrid-- y `distritos` --organización administrativa oficial--.
+
+```{r out.width='100%'}
+
+tmap_mode("view")
+
+tm_shape(secciones_madrid) +
+  tm_fill(col = "red") +
+tm_shape(distritos) +
+  tm_fill(col = "black")
+```
+
+```{r}
+
+area_secciones_madrid <- st_area(secciones_madrid) %>% set_units(km^2)
+area_distritos <- st_area(distritos) %>% set_units(km^2)
+
+sum(area_secciones_madrid)
+sum(area_distritos)
+```
+
+```{r}
+
+area_sum <- sum((area_secciones_madrid - area_distritos))
+round(area_sum, 4)
+```
+
+Asociamos el código del distrito (`CDIS`) con su nombre (`NDIS`).
+
+```{r message=FALSE}
+
+m_geo <- st_drop_geometry(distritos) %>% 
+  select("CDIS" = COD_DIS_TX, "NDIS" = NOMBRE) %>% 
+  left_join(secciones_madrid, by = "CDIS") %>% 
+  select(CCAA, MUN, CDIS, NDIS, geometry) %>% 
+  st_as_sf()
+
+m_geo$NDIS <- sub(" - ", "-", m_geo$NDIS)
+```
+
+Agrupamos la geometría de los distritos para formar el municipio de Madrid.
+
+```{r message=FALSE}
+
+madrid_geo <- tibble(CCAA = "Comunidad de Madrid", MUN = "Madrid", "CDIS" = NA, "NDIS" = NA, geometry = st_union(secciones_madrid)) %>% 
+  add_row(m_geo, .after = 1) %>% 
+  st_as_sf()
+```
+
+Calculamos los centroides geográficos de los distritos y los nombramos.
+
+```{r}
+
+distritos_cent_mtx <- st_centroid(m_geo$geometry) %>% 
+  st_coordinates()
+
+distritos_cent_lst <- st_centroid(m_geo$geometry)
+
+m_geo2 <- bind_cols(m_geo, distritos_cent_mtx)
+```
+
+```{r fig.align='center'}
+
+ggplot(m_geo2) +
+  geom_sf(size = 0.1) +
+  geom_label_repel(
+    mapping = aes(x = X, y = Y, label = paste(CDIS, NDIS, sep = ". ")),
+    min.segment.length = 0.25,
+    force = 1,
+    force_pull = 0.25,
+    size = 1.9,
+    family = "serif",
+    label.padding = 0.15,
+    seed = 12345) +
+  labs(x = "Longitud", y = "Latitud") + 
+  theme_light() +
+  theme(
+    text = element_text(
+      family = "serif"),
+    axis.title = element_text(
+      size = 12),
+    axis.text = element_text(
+      size = 8)) +
+  coord_sf(clip = "off")
+```
+
+Visualizamos los centroides geográficos.
+
+```{r fig.align='center'}
+
+ggplot() + 
+  geom_sf(data = m_geo, size = 0.1) +
+  geom_sf(data = distritos_cent_lst, color = "black") +
+  labs(x = "Longitud", y = "Latitud") + 
+  theme_light() +
+  theme(
+    text = element_text(
+      family = "serif"),
+    axis.title = element_text(
+      size = 12),
+    axis.text = element_text(
+      size = 8)) +
+  coord_sf(clip = "off")
+```
+
+## Renta neta media anual de los hogares
+
+Para importar datos no tabulares --en nuestro caso, doble encabezado y celdas combinadas-- de Microsoft Excel hay que usar las librerías *tidyxl* y *unpivotr* de Duncan Garmonsway (véase su tutorial [*Spreadsheet Munging Strategies*](https://nacnudus.github.io/spreadsheet-munging-strategies/)).
+
+La función `behead` de *unpivotr* se emplea para extraer los datos de las filas que sirven como encabezados una por una. Hecho esto, se puede pivotar hacia otra zona para extraer los datos de las columnas. Si dos o más celdas están combinadas, los datos sólo existen en una de ellas; la del extremo izquierdo, las demás están vacías. Para tratar esto, se emplea la dirección `up-left` en `behead`.
+
+```{r}
+
+renta <- xlsx_cells("data/renta neta media anual de los hogares.xlsx") %>% 
+  filter(!is_blank) %>% 
+  select(address, row, col, is_blank, data_type, character, numeric) %>% 
+  behead("up-left", "VARIABLES") %>% 
+  behead("up", "AÑO") %>% 
+  behead("left", "CCAA") %>% 
+  behead("left", "MUN") %>% 
+  behead("left", "CDIS") %>% 
+  behead("left", "NDIS") %>% 
+  filter(VARIABLES %in% c("Renta neta media por hogar (€)", "Tamaño medio del hogar")) %>%
+  select(CCAA, MUN, CDIS, NDIS, AÑO, VARIABLES, "VALOR" = numeric) %>% 
+  mutate(AÑO = as.integer(AÑO))
+renta
+```
+
+### Librerías tidyxl y unpivotr
+
+Tomando como ejemplo el rango `E1:I1`, "Renta neta media por hogar (€)", se ha hecho lo siguiente:
+
+1)  El rango está combinado, estando el valor únicamente en `E1`. Para extraer esta fila, tomamos como referencia la celda `I5` y vamos hacia arriba y a la izquierda; `behead(up-left)`.
+
+<center>
+
+![Renta neta media por hogar (01)](images/1%20excel.png)
+
+</center>
+
+2)  La fila 2 pasa a ser la fila 1. Para extraer los años vamos hacia arriba; `behead(up)`.
+
+<center>
+
+![Renta neta media por hogar (02)](images/2%20excel.png)
+
+</center>
+
+3)  Para extraer las columnas A, B, C y D vamos a la izquierda; `behead(left)`. Repetimos la operación cuatro veces.
+
+<center>
+
+![Renta neta media por hogar (03)](images/3%20excel.png)
+
+</center>
+
+## Tasa absoluta de paro registrado
+
+En comparación con [Renta neta media anual de los hogares], esta hoja de cálculo contiene tres filas de encabezados; año, mes y tasas de paro total y por edad.
+
+```{r}
+
+paro_mensual <- xlsx_cells("data/tasa absoluta de paro registrado.xlsx") %>% 
+  filter(!is_blank) %>% 
+  select(address, row, col, is_blank, data_type, character, numeric) %>% 
+  behead("up-left", "AÑO") %>% 
+  behead("up-left", "MES") %>% 
+  behead("up", "VARIABLES") %>% 
+  behead("left", "CCAA") %>% 
+  behead("left", "MUN") %>% 
+  behead("left", "CDIS") %>% 
+  behead("left", "NDIS") %>% 
+  select(CCAA, MUN, CDIS, NDIS, AÑO, MES, VARIABLES, "VALOR" = numeric) %>% 
+  mutate(AÑO = as.integer(AÑO))
+paro_mensual
+```
+
+Los datos tienen una frecuencia mensual, calculamos la media de cada período.
+
+```{r message=FALSE}
+
+paro_anual <- paro_mensual %>% 
+  filter(VARIABLES == "Total") %>% 
+  group_by(CCAA, MUN, CDIS, NDIS, AÑO, VARIABLES) %>%
+  summarise(across(VALOR, mean), .groups = "drop") %>% 
+  select(CCAA, MUN, CDIS, NDIS, AÑO, "PARO" = VALOR)
+paro_anual
+```
+
+## Nivel de estudios de la población ≥25 años {#nivel-de-estudios-de-la-población-25-años}
+
+```{r}
+
+estudios <- xlsx_cells("data/nivel de estudios.xlsx") %>% 
+  filter(!is_blank) %>% 
+  select(address, row, col, is_blank, data_type, character, numeric) %>% 
+  behead("up-left", "AÑO") %>% 
+  behead("up", "VARIABLES") %>% 
+  behead("left", "CCAA") %>% 
+  behead("left", "MUN") %>% 
+  behead("left", "CDIS") %>% 
+  behead("left", "NDIS") %>% 
+  select(CCAA, MUN, CDIS, NDIS, AÑO, VARIABLES, "VALOR" = numeric) %>% 
+  mutate(AÑO = as.integer(AÑO), VALOR = as.integer(VALOR))
+estudios
+```
+
+Usamos la clasificación de programas, titulaciones y certificaciones en niveles de formación alcanzados (CNED-A), de la [**Clasificación Nacional de Educación (CNED-2014)**](https://www.ine.es/dyngs/INEbase/es/operacion.htm?c=Estadistica_C&cid=1254736177034&menu=ultiDatos&idp=1254735976614), para reagrupar las variables:
+
+**A. Primera etapa de educación secundaria e inferior**
+
+-   CNED 0: Menos que primaria
+-   CNED 1: Educación primaria
+-   CNED 2: Primera etapa de educación secundaria y similar
+
+**B. Segunda etapa de educación secundaria y educación postsecundaria no superior**
+
+-   CNED 3: Segunda etapa de educación secundaria y similar
+-   CNED 4: Educación postsecundaria no superior
+
+**C. Educación superior**
+
+-   CNED 5: Enseñanzas de formación profesional, artes plásticas y diseño y deportivas de grado superior y equivalentes; títulos propios universitarios que precisan del título de bachiller, de duración igual o superior a 2 años
+-   CNED 6: Grados universitarios de hasta 240 créditos ECTS, diplomados universitarios, títulos propios universitarios de experto o especialista, y similares
+-   CNED 7: Grados universitarios de más de 240 créditos ECTS, licenciados, másteres y especialidades en Ciencias de la Salud por el sistema de residencia, y similares
+-   CNED 8: Enseñanzas de doctorado
+
+```{r message=FALSE}
+
+estudios2 <- estudios %>% 
+  mutate(VARIABLES = recode(VARIABLES,
+                           "No sabe leer ni escribir" = "CNED 0",
+                           "Sin estudios" = "CNED 0",
+                           "Enseñanza primaria incompleta" = "CNED 0",
+                           "Bachiller elemental, Graduado escolar, E.S.O." = "CNED 1-2",
+                           "Formación profesional 1er grado" = "CNED 3",
+                           "Formación profesional 2º grado" = "CNED 5",
+                           "Bachiller superior, B.U.P." = "CNED 3",
+                           "Otros titulados medios" = "CNED 4",
+                           "Diplomado Escuela universitaria" = "CNED 6",
+                           "Arquitecto o Ingeniero técnico" = "CNED 6",
+                           "Licenciado universitario, Arquitecto o Ingeniero" = "CNED 7",
+                           "Titulado estudios superiores no universitarios" = "CNED 5",
+                           "Doctorado o Estudios postgraduados" = "CNED 8",
+                           "Desconocido y No consta" = "Desconocido")) %>% 
+  group_by(CCAA, MUN, CDIS, NDIS, AÑO, VARIABLES) %>%
+  summarise(across(VALOR, sum), .groups = "drop")
+estudios2
+```
+
+Las cantidades son en valor absoluto, las convertimos en tasas al igual que en [Tasa absoluta de paro registrado](#tasa-absoluta-de-paro-registrado-1).
+
+```{r}
+
+estudios_tasa <- estudios2 %>% 
+  pivot_wider(names_from = VARIABLES, values_from = VALOR) %>% 
+  mutate(across(6:14, ~ .x / Total * 100)) %>% 
+  select(-Total) %>% 
+  pivot_longer(6:14, names_to = "VARIABLES", values_to = "VALOR")
+estudios_tasa
+```
+
+Sumamos los niveles de estudios superiores.
+
+```{r}
+
+estudios_sup <- estudios_tasa %>% 
+  filter(VARIABLES %in% c("CNED 5", "CNED 6", "CNED 7", "CNED 8")) %>% 
+  group_by(CCAA, MUN, CDIS, NDIS, AÑO) %>%
+  summarise(across(VALOR, sum), .groups = "drop")
+estudios_sup
+```
+
+## Unir datos
+
+```{r}
+
+datos <- renta %>% 
+  pivot_wider(names_from = VARIABLES, values_from = VALOR) %>% 
+  rename("RENTA" = `Renta neta media por hogar (€)`, "PERS_HOGAR" = `Tamaño medio del hogar`) %>% 
+  left_join(paro_anual, by = c("CCAA", "MUN", "CDIS", "NDIS", "AÑO")) %>% 
+  left_join(estudios_sup, by = c("CCAA", "MUN", "CDIS", "NDIS", "AÑO")) %>% 
+  left_join(madrid_geo, by = c("CCAA", "MUN", "CDIS", "NDIS")) %>% 
+  select(CCAA, MUN, CDIS, NDIS, AÑO, RENTA, PERS_HOGAR, PARO, "EST_PCT" = VALOR, geometry) %>% 
+  mutate(RENTA = as.integer(RENTA)) %>% 
+  st_as_sf()
+datos
+```
+
+## Estadísticos descriptivos
+
+Calculamos los estadísticos descriptivos de los distritos con la librería [skimr](https://docs.ropensci.org/skimr/).
+
+```{r}
+
+datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  select(RENTA, PERS_HOGAR, PARO, EST_PCT) %>% 
+  st_drop_geometry() %>% 
+  skim() %>% 
+  mutate(across(where(is.numeric), round, 2))
+```
+
+# Visualización
+
+## Matriz de correlación
+
+Creamos la matriz de correlación con la librería *ggcorrplot*.
+
+```{r message=FALSE, warning=FALSE, fig.align='center'}
+
+datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  select("Renta hogares" = RENTA,
+         "Tamaño hogar" = PERS_HOGAR,
+         "Paro" = PARO,
+         "Estudios superiores" = EST_PCT) %>% 
+  st_drop_geometry() %>% 
+  cor(method = "spearman") %>% 
+  ggcorrplot(
+    ggtheme = theme_minimal,
+    legend.title = "\u03C1 de Spearman",
+    colors = c("firebrick", "white", "deepskyblue4"),
+    hc.order = TRUE,
+    tl.cex = 10,
+    tl.srt = 30,
+    outline.color = "grey90") +
+  theme(
+    text = element_text(
+      family = "serif"),
+    legend.title = element_text(
+      size = 10,
+      margin = margin(t = 0, b = 5, r = 0, l = 0, unit = "pt")),
+    legend.text = element_text(
+      size = 8),
+    legend.text.align = 0.75,
+    #plot.margin = margin(t = 1, b = 1, r = 1.2, l = 0.8, "cm"),
+    ) +
+  coord_cartesian(clip = "off")
+```
+
+## *Q-Q Plot*
+
+```{r fig.align='center'}
+
+datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  ggplot(aes(sample = RENTA)) + 
+    stat_qq(size = 1) + 
+    stat_qq_line() +
+  theme_light() +
+  theme(
+    text = element_text(
+    family = "serif"),
+    axis.title = element_text(
+      size = 10)) +
+  labs(x = "Desviación típica", y = "Renta neta media de los hogares (€)") + 
+  scale_x_continuous(breaks = breaks_width(1),
+                     minor_breaks = NULL) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  coord_cartesian(clip = "off")
+```
+
+## *Box plot*
+
+```{r fig.align='center'}
+
+datos %>%
+ filter(!is.na(CDIS)) %>%
+ ggplot() +
+  aes(x = reorder(NDIS, RENTA), y = RENTA) +
+  geom_boxplot(size = 0.2) +
+  coord_flip(clip = "off") +
+  labs(x = "Distritos", y = "Renta neta media de los hogares (€)") +
+  theme_light() +
+  theme(
+    text = element_text(
+    family = "serif"),
+    axis.title = element_text(
+      size = 10)) +
+  scale_y_continuous(limits = c(24000, 71000),
+                     breaks = breaks_extended(10),
+                     labels = label_number(big.mark = ".", decimal.mark = ","))
+```
+
+## Cartografía con *tmap*
+
+### Renta neta media de los hogares
+
+```{r fig.align='center'}
+
+tmap_mode("plot")
+
+datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  tm_shape() + 
+  tm_polygons(
+    col = "RENTA",
+    lwd = 0.5,
+    breaks = seq(20000, 80000, by = 10000),
+    labels = c("20.000-30.000 €", "30.000-40.000 €", "40.000-50.000 €", "50.000-60.000 €", "60.000-70.000 €", "70.000-80.000 €"),
+    title = "",
+    palette = "RdBu",
+    legend.reverse = TRUE) +
+  tm_facets(by = "AÑO", nrow = 1) +
+  tm_layout(
+    frame = FALSE,
+    frame.lwd = NA,
+    asp = 1,
+    fontfamily = "serif",
+    legend.position = c("left", "center"),
+    legend.outside.size = 0.2,
+    outer.margins = c(t = 0, b = 0, r = 0, l = -0.09),
+    panel.label.bg.color = "grey90",
+    panel.label.height = 1)
+```
+
+### Tasa absoluta de paro registrado {#tasa-absoluta-de-paro-registrado-1}
+
+```{r fig.align='center'}
+
+datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  tm_shape() + 
+  tm_polygons(
+    col = "PARO",
+    lwd = 0.5,
+    breaks = seq(4, 16, by = 2),
+    labels = c("4-6%", "6-8%", "8-10%", "10-12%", "12-14%", "14-16%"),
+    title = "",
+    palette = "-RdBu",
+    legend.reverse = FALSE) +
+  tm_facets(by = "AÑO", nrow = 1) +
+  tm_layout(
+    frame = FALSE,
+    frame.lwd = NA,
+    asp = 1,
+    fontfamily = "serif",
+    legend.position = c("left", "center"),
+    legend.outside.size = 0.2,
+    outer.margins = c(t = 0, b = 0, r = 0, l = -0.09),
+    panel.label.bg.color = "grey90",
+    panel.label.height = 1)
+```
+
+### Población ≥25 años con estudios superiores
+
+```{r fig.align='center'}
+
+datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  tm_shape() + 
+  tm_polygons(
+    col = "EST_PCT",
+    lwd = 0.5,
+    breaks = seq(10, 70, by = 10),
+    labels = c("10-20%", "20-30%", "30-40%", "40-50%", "50-60%", "60-70%"),
+    title = "",
+    palette = "RdBu",
+    legend.reverse = FALSE) +
+  tm_facets(by = "AÑO", nrow = 1) +
+  tm_layout(
+    frame = FALSE,
+    frame.lwd = NA,
+    asp = 1,
+    fontfamily = "serif",
+    legend.position = c("left", "center"),
+    legend.outside.size = 0.2,
+    outer.margins = c(t = 0, b = 0, r = 0, l = -0.09),
+    panel.label.bg.color = "grey90",
+    panel.label.height = 1)
+```
+
+### Tamaño medio del hogar
+
+```{r fig.align='center'}
+
+datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  tm_shape() + 
+  tm_polygons(
+    col = "PERS_HOGAR",
+    lwd = 0.5,
+    breaks = seq(1.80, 2.80, by = 0.20),
+    labels = c("1,8-2,0", "2,0-2,2", "2-2,2,4", "2,4-2,6", "2,6-2,8"),
+    title = "",
+    palette = "RdBu",
+    legend.reverse = TRUE) +
+  tm_facets(by = "AÑO", nrow = 1) +
+  tm_layout(
+    frame = FALSE,
+    frame.lwd = NA,
+    asp = 1,
+    fontfamily = "serif",
+    legend.position = c("left", "center"),
+    legend.outside.size = 0.2,
+    outer.margins = c(t = 0, b = 0, r = 0, l = -0.09),
+    panel.label.bg.color = "grey90",
+    panel.label.height = 1)
+```
+
+# Algoritmo *k-nearest neighbours* (kNN)
+
+Calculamos los $k=5$ vecinos más cercanos para cada distrito con la librería `spdep`.
+
+```{r warning=FALSE}
+
+knn <- knearneigh(distritos_cent_lst, k = 5, longlat = TRUE, use_kd_tree = TRUE)
+
+knn_nb <- knn2nb(knn)
+```
+
+Usamos [esta respuesta de Stack Overflow](https://stackoverflow.com/questions/58535507/plotting-neighborhoods-network-to-a-ggplot-maps/58540394#58540394) para visualizarlos en *ggplot2*.
+
+```{r}
+
+distritos_cent_df <- as.data.frame(distritos_cent_mtx)
+
+n <- length(attributes(knn_nb)$region.id)
+DA <- data.frame(
+  from = rep(1:n, sapply(knn_nb, length)),
+  to = unlist(knn_nb)
+  )
+DA <- cbind(DA, distritos_cent_df[DA$from, 1:2], distritos_cent_df[DA$to, 1:2])
+colnames(DA)[3:6] = c("long","lat","long_to","lat_to")
+```
+
+```{r fig.align='center'}
+
+ggplot() + 
+  geom_sf(data = m_geo, size = 0.1) +
+  geom_sf(data = distritos_cent_lst, color = "black") +
+  geom_segment(data = DA, aes(x = long, y = lat, xend = long_to, yend = lat_to), colour = "firebrick3", size = 0.25) +
+  labs(x = "Longitud", y = "Latitud") + 
+  theme_light() +
+  theme(
+    text = element_text(
+      family = "serif"),
+    axis.title = element_text(
+      size = 12),
+    axis.text = element_text(
+      size = 8)) +
+  coord_sf(clip = "off")
+```
+
+# Coeficiente de Gini espacial
+
+Calculamos el coeficiente de Gini espacial propuesto por @rey2013 con la función `mc.spGini` de la librería *lctools*. Devuelve los valores tanto de la descomposición espacial del coeficiente como del estadístico de prueba de la simulación de Monte Carlo.
+
+## 2015
+
+```{r message=FALSE}
+
+renta_2015 <- datos %>% 
+  filter(!is.na(CDIS) & AÑO == 2015) %>% 
+  group_by(AÑO, RENTA) %>% 
+  summarise() %>% 
+  select(RENTA) %>% 
+  st_drop_geometry() %>% 
+  unlist(use.names = FALSE)
+
+set.seed(12345)
+renta_2015_99 <- mc.spGini(Nsim = 99, Bandwidth = 5, x = renta_2015, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+renta_2015_999 <- mc.spGini(Nsim = 999, Bandwidth = 5, x = renta_2015, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+round(renta_2015_99[["spGini.Observed"]], 4)
+renta_2015_99[["pseudo.p"]]
+renta_2015_999[["pseudo.p"]]
+```
+
+## 2016
+
+```{r message=FALSE}
+
+renta_2016 <- datos %>% 
+  filter(!is.na(CDIS) & AÑO == 2016) %>% 
+  group_by(AÑO, RENTA) %>% 
+  summarise() %>% 
+  select(RENTA) %>% 
+  st_drop_geometry() %>% 
+  unlist(use.names = FALSE)
+
+set.seed(12345)
+renta_2016_99 <- mc.spGini(Nsim = 99, Bandwidth = 5, x = renta_2016, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+renta_2016_999 <- mc.spGini(Nsim = 999, Bandwidth = 5, x = renta_2016, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+round(renta_2016_99[["spGini.Observed"]], 4)
+renta_2016_99[["pseudo.p"]]
+renta_2016_999[["pseudo.p"]]
+```
+
+## 2017
+
+```{r message=FALSE}
+
+renta_2017 <- datos %>% 
+  filter(!is.na(CDIS) & AÑO == 2017) %>% 
+  group_by(AÑO, RENTA) %>% 
+  summarise() %>% 
+  select(RENTA) %>% 
+  st_drop_geometry() %>% 
+  unlist(use.names = FALSE)
+
+set.seed(12345)
+renta_2017_99 <- mc.spGini(Nsim = 99, Bandwidth = 5, x = renta_2017, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+renta_2017_999 <- mc.spGini(Nsim = 999, Bandwidth = 5, x = renta_2017, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+round(renta_2017_99[["spGini.Observed"]], 4)
+renta_2017_99[["pseudo.p"]]
+renta_2017_999[["pseudo.p"]]
+```
+
+## 2018
+
+```{r message=FALSE}
+
+renta_2018 <- datos %>% 
+  filter(!is.na(CDIS) & AÑO == 2018) %>% 
+  group_by(AÑO, RENTA) %>% 
+  summarise() %>% 
+  select(RENTA) %>% 
+  st_drop_geometry() %>% 
+  unlist(use.names = FALSE)
+
+set.seed(1235)
+renta_2018_99 <- mc.spGini(Nsim = 99, Bandwidth = 5, x = renta_2018, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+renta_2018_999 <- mc.spGini(Nsim = 999, Bandwidth = 5, x = renta_2018, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+round(renta_2018_99[["spGini.Observed"]], 4)
+renta_2018_99[["pseudo.p"]]
+renta_2018_999[["pseudo.p"]]
+```
+
+## 2019
+
+```{r message=FALSE}
+
+renta_2019 <- datos %>% 
+  filter(!is.na(CDIS) & AÑO == 2019) %>% 
+  group_by(AÑO, RENTA) %>% 
+  summarise() %>% 
+  select(RENTA) %>% 
+  st_drop_geometry() %>% 
+  unlist(use.names = FALSE)
+
+set.seed(12345)
+renta_2019_99 <- mc.spGini(Nsim = 99, Bandwidth = 5, x = renta_2019, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+renta_2019_999 <- mc.spGini(Nsim = 999, Bandwidth = 5, x = renta_2019, Coord.X = distritos_cent_mtx[,1], Coord.Y = distritos_cent_mtx[,2])
+
+round(renta_2019_99[["spGini.Observed"]], 4)
+renta_2019_99[["pseudo.p"]]
+renta_2019_999[["pseudo.p"]]
+```
+
+## 2015-2019
+
+Fijamos $k=25$, ya que cada período se repite 5 veces.
+
+```{r message=FALSE}
+
+renta_t <- datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  group_by(CDIS, NDIS, AÑO, RENTA) %>% 
+  summarise() %>% 
+  select(RENTA) %>% 
+  st_drop_geometry() %>% 
+  unlist(use.names = FALSE)
+
+distritos_t <- datos %>% 
+  filter(!is.na(CDIS)) %>% 
+  group_by(CDIS, NDIS, AÑO, RENTA) %>% 
+  summarise() %>% 
+  select(geometry) %>% 
+  st_centroid() %>% 
+  st_coordinates()
+
+set.seed(12345)
+renta_t_99 <- mc.spGini(Nsim = 99, Bandwidth = 25, x = renta_t, Coord.X = distritos_t[,1], Coord.Y = distritos_t[,2])
+
+renta_t_999 <- mc.spGini(Nsim = 999, Bandwidth = 25, x = renta_t, Coord.X = distritos_t[,1], Coord.Y = distritos_t[,2])
+
+round(renta_t_99[["spGini.Observed"]], 4)
+renta_t_99[["pseudo.p"]]
+renta_t_999[["pseudo.p"]]
+```
+
+# Bibliografía
